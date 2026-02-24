@@ -7,7 +7,23 @@ import { Send, User, MessageSquare, Clock, Loader2, Search } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react';
 import { format } from 'date-fns';
 
-const API_URL = 'https://my-awesome-wa-bot.loca.lt';
+const formatTime = (timestamp?: number | null) => {
+    if (!timestamp) return '';
+    try {
+        return format(new Date(timestamp * 1000), 'h:mm a');
+    } catch (e) {
+        return '';
+    }
+};
+
+const getApiUrl = () => {
+    if (typeof window !== 'undefined') {
+        return `http://${window.location.hostname}:4000`;
+    }
+    return 'http://localhost:4000';
+};
+
+const API_URL = getApiUrl();
 
 interface Chat {
     id: string;
@@ -238,7 +254,7 @@ export default function WhatsAppDashboard() {
                                 </div>
                                 <div className="flex flex-col items-end flex-shrink-0 space-y-2">
                                     <span className="text-xs text-gray-400 font-medium">
-                                        {format(new Date(chat.timestamp * 1000), 'h:mm a')}
+                                        {formatTime(chat.timestamp)}
                                     </span>
                                     {chat.unreadCount > 0 && (
                                         <span className="bg-green-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full shadow-sm">
@@ -279,7 +295,7 @@ export default function WhatsAppDashboard() {
                                     <h2 className="font-semibold text-gray-800">{activeChat.name}</h2>
                                     <p className="text-xs text-gray-500 flex items-center">
                                         <Clock className="w-3 h-3 mr-1" />
-                                        Last active {format(new Date(activeChat.timestamp * 1000), 'h:mm a')}
+                                        Last active {formatTime(activeChat.timestamp)}
                                     </p>
                                 </div>
                             </div>
@@ -301,7 +317,7 @@ export default function WhatsAppDashboard() {
                                             <p className="whitespace-pre-wrap flex-1">{msg.body}</p>
                                             <div className="flex justify-end mt-1">
                                                 <span className="text-[10px] text-gray-400 select-none">
-                                                    {format(new Date(msg.timestamp * 1000), 'h:mm a')}
+                                                    {formatTime(msg.timestamp)}
                                                 </span>
                                             </div>
                                         </div>
