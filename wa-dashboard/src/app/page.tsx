@@ -3,9 +3,11 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
 import axios from 'axios';
-import { Send, User, MessageSquare, Clock, Loader2, Search } from 'lucide-react';
+import { Send, User, MessageSquare, Clock, Loader2, Search, LogOut } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { format } from 'date-fns';
+import { useAuth } from './contexts/AuthContext';
+import { useRouter } from 'next/navigation';
 
 const formatTime = (timestamp?: number | null) => {
     if (!timestamp) return '';
@@ -15,15 +17,6 @@ const formatTime = (timestamp?: number | null) => {
         return '';
     }
 };
-
-const getApiUrl = () => {
-    if (typeof window !== 'undefined') {
-        return `http://${window.location.hostname}:4000`;
-    }
-    return 'http://localhost:4000';
-};
-
-const API_URL = getApiUrl();
 
 interface Chat {
     id: string;
@@ -43,8 +36,11 @@ interface Message {
 }
 
 export default function WhatsAppDashboard() {
+    const { user, token, isLoading, logout, apiUrl } = useAuth();
+    const router = useRouter();
+
     const [socket, setSocket] = useState<Socket | null>(null);
-    const [clientStatus, setClientStatus] = useState<'initializing' | 'qr' | 'ready'>('initializing');
+    const [clientStatus, setClientStatus] = useState<'initializing' | 'qr' | 'ready' | 'disconnected'>('initializing');
     const [qrCodeData, setQrCodeData] = useState<string>('');
     
     const [chats, setChats] = useState<Chat[]>([]);
@@ -55,10 +51,35 @@ export default function WhatsAppDashboard() {
     const [sending, setSending] = useState(false);
     const messagesEndRef = useRef<HTMLDivElement>(null);
 
-    // Initial Setup & Socket Connection
+    // Auth guard — redirect to login if not authenticated
     useEffect(() => {
-        const newSocket = io(API_URL);
+        if (!isLoading && !token) {
+            router.push('/login');
+        }
+    }, [isLoading, token, router]);
+
+    // Create axios instance with auth header
+    const api = axios.create({
+        baseURL: apiUrl,
+        headers: { Authorization: `Bearer ${token}` },
+    });
+
+    // Socket connection with auth
+    useEffect(() => {
+        if (!token) return;
+
+        const newSocket = io(apiUrl, {
+            auth: { token },
+        });
         setSocket(newSocket);
+
+        newSocket.on('connect_error', (err) => {
+            console.error('Socket connection error:', err.message);
+            if (err.message.includes('Authentication')) {
+                logout();
+                router.push('/login');
+            }
+        });
 
         newSocket.on('client_status', (status: string) => {
             setClientStatus(status as any);
@@ -71,7 +92,6 @@ export default function WhatsAppDashboard() {
         });
 
         newSocket.on('new_message', (msg: Message) => {
-            // Update chats list
             setChats(prev => {
                 const existing = prev.find(c => c.id === msg.from || c.id === msg.to);
                 if (existing) {
@@ -81,17 +101,14 @@ export default function WhatsAppDashboard() {
                             : c
                     ).sort((a, b) => b.timestamp - a.timestamp);
                 } else {
-                    // Need a full refresh if it's a completely new chat we don't know about
                     fetchChats();
                     return prev;
                 }
             });
 
-            // Append to active chat if it matches
             setActiveChat(prevActive => {
                 if (prevActive && (prevActive.id === msg.from || prevActive.id === msg.to)) {
                     setMessages(prev => {
-                        // avoid duplicate messages if socket reconnects
                         if (prev.find(m => m.id === msg.id)) return prev;
                         return [...prev, msg];
                     });
@@ -101,36 +118,33 @@ export default function WhatsAppDashboard() {
         });
 
         return () => { newSocket.close(); }
-    }, []);
+    }, [token]);
 
-    // Scroll to bottom when messages change
+    // Scroll to bottom
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [messages]);
 
-    // Fetch Chats when Ready
     const fetchChats = async () => {
         try {
-            const res = await axios.get(`${API_URL}/api/chats`);
+            const res = await api.get('/api/chats');
             setChats(res.data.sort((a: Chat, b: Chat) => b.timestamp - a.timestamp));
         } catch (err) {
             console.error("Error fetching chats:", err);
         }
     };
 
-    // Load Messages for a Chat
     const handleChatSelect = async (chat: Chat) => {
         setActiveChat(chat);
-        setMessages([]); // clear current
+        setMessages([]);
         try {
-            const res = await axios.get(`${API_URL}/api/chats/${chat.id}/messages`);
+            const res = await api.get(`/api/chats/${chat.id}/messages`);
             setMessages(res.data);
         } catch (err) {
             console.error("Error fetching messages:", err);
         }
     };
 
-    // Send Message
     const handleSendMessage = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!inputMessage.trim() || !activeChat || sending) return;
@@ -140,7 +154,6 @@ export default function WhatsAppDashboard() {
         setSending(true);
 
         try {
-             // Optimistic UI update
              const optimisticMsg: Message = {
                 id: `temp-${Date.now()}`,
                 body: tempMsg,
@@ -151,14 +164,13 @@ export default function WhatsAppDashboard() {
             };
             setMessages(prev => [...prev, optimisticMsg]);
 
-            await axios.post(`${API_URL}/api/send`, {
+            await api.post('/api/send', {
                 to: activeChat.id,
                 message: tempMsg
             });
             
         } catch (err) {
             console.error("Failed to send:", err);
-            // Revert optimistic if failed
             setMessages(prev => prev.filter(m => !m.id.startsWith('temp-')));
             setInputMessage(tempMsg);
         } finally {
@@ -166,13 +178,42 @@ export default function WhatsAppDashboard() {
         }
     };
 
-    // Render Full Page Loading/QR
+    const handleLogout = () => {
+        // Tell backend to destroy WhatsApp session
+        if (socket) {
+            socket.emit('logout_whatsapp');
+        }
+        logout();
+        router.push('/login');
+    };
+
+    // Show loading while checking auth
+    if (isLoading) {
+        return (
+            <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center p-4">
+                <Loader2 className="w-12 h-12 text-green-600 animate-spin mb-4" />
+                <h2 className="text-xl font-semibold text-gray-700">Loading...</h2>
+            </div>
+        );
+    }
+
+    // Don't render anything if not authenticated (will redirect)
+    if (!token) return null;
+
+    // Initializing state
     if (clientStatus === 'initializing') {
         return (
             <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center p-4">
                 <Loader2 className="w-12 h-12 text-green-600 animate-spin mb-4" />
                 <h2 className="text-xl font-semibold text-gray-700">Connecting to WhatsApp Backend...</h2>
-                <p className="text-gray-500 mt-2">Please wait while we initialize the browser session.</p>
+                <p className="text-gray-500 mt-2">Please wait while we initialize your browser session.</p>
+                <p className="text-gray-400 text-sm mt-1">Signed in as {user?.email}</p>
+                <button
+                    onClick={handleLogout}
+                    className="mt-6 px-4 py-2 text-sm text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors flex items-center gap-2"
+                >
+                    <LogOut className="w-4 h-4" /> Sign out
+                </button>
             </div>
         );
     }
@@ -185,9 +226,10 @@ export default function WhatsAppDashboard() {
                         <MessageSquare className="w-8 h-8 text-green-600" />
                     </div>
                     <h2 className="text-2xl font-bold text-gray-800 mb-2">Link WhatsApp</h2>
-                    <p className="text-gray-500 text-center mb-8">
+                    <p className="text-gray-500 text-center mb-2">
                         Open WhatsApp on your phone &gt; Linked Devices &gt; Link a Device and scan the code below.
                     </p>
+                    <p className="text-gray-400 text-sm mb-6">Signed in as {user?.email}</p>
                     
                     <div className="bg-white p-4 border-2 border-green-100 rounded-xl">
                         {qrCodeData ? (
@@ -198,6 +240,13 @@ export default function WhatsAppDashboard() {
                             </div>
                         )}
                     </div>
+
+                    <button
+                        onClick={handleLogout}
+                        className="mt-6 px-4 py-2 text-sm text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors flex items-center gap-2"
+                    >
+                        <LogOut className="w-4 h-4" /> Sign out
+                    </button>
                 </div>
             </div>
         );
@@ -213,8 +262,19 @@ export default function WhatsAppDashboard() {
                         <div className="w-10 h-10 bg-white/20 rounded-full flex items-center justify-center">
                             <User className="w-6 h-6" />
                         </div>
-                        <h1 className="font-semibold text-lg tracking-wide">WhatsApp Dashboard</h1>
+                        <div>
+                            <h1 className="font-semibold text-lg tracking-wide leading-none">WA Dashboard</h1>
+                            <p className="text-xs text-white/70 mt-0.5">{user?.email}</p>
+                        </div>
                     </div>
+                    <button
+                        id="logout-button"
+                        onClick={handleLogout}
+                        className="p-2 hover:bg-white/10 rounded-lg transition-colors"
+                        title="Sign out"
+                    >
+                        <LogOut className="w-5 h-5" />
+                    </button>
                 </div>
 
                 {/* Search */}

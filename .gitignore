@@ -2,7 +2,11 @@ node_modules/
 .env
 .env.local
 .env.*
+!.env.example
 
 # WhatsApp Bot Cache & Auth
 wabot_node/.wwebjs_auth/
 wabot_node/.wwebjs_cache/
+
+# Next.js
+wa-dashboard/.next/
